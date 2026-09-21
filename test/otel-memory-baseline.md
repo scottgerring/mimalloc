@@ -58,6 +58,55 @@ supplied to `on_free`. A mismatch means that directly translating the callbacks
 would emit different pointer keys in `otel_memory:alloc` and
 `otel_memory:free`.
 
+## Built-in pprof stacks
+
+Run the isolated unwind and attribution tests with:
+
+```sh
+test/reproduce-pprof-stacks.py
+```
+
+### Unwinding
+
+The script starts each profiling mode once with a cold unwinder, then primes
+`backtrace()` before profiling and checks for a fixed three-frame allocation
+stack.
+
+| Build mode | First unwind | After priming `backtrace()` |
+|---|---|---|
+| `MI_PROFILE=FULL` | `SIGSEGV` | `pprof_stack_leaf` → `pprof_stack_middle` → `pprof_stack_root` |
+| `MI_PROFILE=ON` | `SIGSEGV` | `pprof_stack_leaf` → `pprof_stack_middle` → `pprof_stack_root` |
+
+The first Linux `backtrace()` lazily loads its unwinding support, which allocates
+through mimalloc and recursively enters the profiler until the process crashes.
+Once `backtrace()` is primed, mimalloc's unwinder captures the expected
+callback-time stack in both modes.
+
+### Attribution
+
+Each fresh process configures a nominal 4 KiB interval and consumes the forced
+start-up callbacks on a separate calibration stack. It then makes 256
+allocations of 64 bytes through the `pprof_bulk_*` stack, updates the page
+statistics, and makes one 80-byte slow-path allocation through the
+`pprof_trigger_*` stack. The measured phase therefore allocates 16,384 bulk
+bytes and 80 trigger bytes, making the ground-truth trigger share 0.486%. The
+distinct call ladders are non-inlined and non-tail-called.
+
+The table aggregates `alloc_objects` from 100 fresh pprof profiles per build.
+The 95% confidence intervals are process-cluster bootstrap intervals with 20,000
+resamples, so callbacks from the same process are kept together.
+
+| Build mode | Fresh processes | Bulk-stack callbacks | Trigger-stack callbacks | Trigger share (95% CI) |
+|---|---:|---:|---:|---:|
+| `MI_PROFILE=FULL` | 100 | 803 | 5 | 0.62% (0.13%–1.19%) |
+| `MI_PROFILE=ON` | 100 | 6 | 100 | 94.34% (87.72%–100.00%) |
+
+`MI_PROFILE=FULL` is consistent with the 0.486% byte share. `MI_PROFILE=ON` is
+not: after bulk bytes expire the batched countdown, the next slow-path trigger
+allocation receives the callback and its stack. The reported stack is a valid
+synchronous unwind, but it often belongs to the allocation that noticed the
+expired countdown rather than to an allocation whose bytes crossed it.
+
 ## End-to-end eBPF run
 
 Run the workload alongside the profiler from
@@ -77,3 +126,10 @@ profiles. Live-heap values drift because some sampled aligned allocations use
 different pointers in the alloc and free callbacks. The profiler correlates
 those events by `(PID, pointer)`, so it cannot retire an allocation when the
 free event carries a different pointer.
+
+# Problems
+
+* In `MI_PROFILE=ON`, unwinding captures the allocation that noticed the expired countdown, not the allocation that crossed it.
+* Using the pprof exporter, the first Linux `backtrace()` allocates while loading unwind support, recursively re-enters profiling, and segfaults unless primed.
+* (needed for eBPF) `on_alloc` returns the next interval so the consumer can control Poisson or adaptive sampling, but mimalloc leaves the effective countdown at `min(previous, new)`, causing roughly 2x callbacks and weight.
+* (needed for eBPF) Sampled aligned allocations can pass the internal base pointer and over-allocation size to `on_alloc`, while `on_free` receives the final aligned pointer, breaking live-heap correlation and size accounting.

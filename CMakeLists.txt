@@ -1208,6 +1208,16 @@ if (MI_BUILD_TESTS)
     endif()
   endforeach()
 
+  # Isolated pprof stack-capture test used by reproduce-pprof-stacks.py.
+  # It uses internal sampling controls and therefore links the static library.
+  if(MI_PROFILE AND MI_BUILD_STATIC AND NOT MI_DEBUG_TSAN)
+    add_executable(mimalloc-test-pprof-stacks test/test-pprof-stacks.c)
+    target_compile_definitions(mimalloc-test-pprof-stacks PRIVATE ${mi_defines})
+    target_compile_options(mimalloc-test-pprof-stacks PRIVATE ${mi_cflags})
+    target_include_directories(mimalloc-test-pprof-stacks PRIVATE include)
+    target_link_libraries(mimalloc-test-pprof-stacks PRIVATE mimalloc-static ${mi_libraries})
+  endif()
+
   # End-to-end OpenTelemetry memory profiling experiment. This is deliberately
   # a standalone consumer of the existing profiling callback API, rather than
   # part of mimalloc's profiling implementation. It is Linux-only because the
