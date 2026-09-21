@@ -1208,6 +1208,27 @@ if (MI_BUILD_TESTS)
     endif()
   endforeach()
 
+  # End-to-end OpenTelemetry memory profiling experiment. This is deliberately
+  # a standalone consumer of the existing profiling callback API, rather than
+  # part of mimalloc's profiling implementation. It is Linux-only because the
+  # initial OTel contract uses SystemTap SDT notes consumed by an eBPF profiler.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND MI_PROFILE)
+    CHECK_INCLUDE_FILES("sys/sdt.h" MI_HAS_SYS_SDT_H)
+    if(MI_HAS_SYS_SDT_H)
+      add_executable(mimalloc-test-otel-memory test/test-otel-memory.c)
+      target_compile_definitions(mimalloc-test-otel-memory PRIVATE ${mi_defines})
+      target_compile_options(mimalloc-test-otel-memory PRIVATE ${mi_cflags})
+      target_include_directories(mimalloc-test-otel-memory PRIVATE include)
+      if(MI_BUILD_STATIC AND NOT MI_DEBUG_TSAN)
+        target_link_libraries(mimalloc-test-otel-memory PRIVATE mimalloc-static ${mi_libraries} m)
+      elseif(MI_BUILD_SHARED)
+        target_link_libraries(mimalloc-test-otel-memory PRIVATE mimalloc ${mi_libraries} m)
+      endif()
+    else()
+      message(STATUS "Skipping mimalloc-test-otel-memory: sys/sdt.h was not found")
+    endif()
+  endif()
+
   # static override test
   if(MI_BUILD_OBJECT AND MI_OVERRIDE AND NOT (MI_CYGWIN OR (MI_TRACK STREQUAL "ASAN") OR MI_DEBUG_TSAN OR MI_DEBUG_UBSAN))
     add_executable(mimalloc-test-stress-static test/test-stress.c)

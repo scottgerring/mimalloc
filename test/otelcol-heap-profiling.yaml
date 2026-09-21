@@ -1,0 +1,26 @@
+# Local end-to-end configuration for the OpenTelemetry eBPF profiler test
+# collector built from opentelemetry-ebpf-profiler's probe-extension branch.
+extensions:
+  heap:
+    live_heap_profiling: true
+    live_heap_max_entries_per_pid: 10000
+
+receivers:
+  profiling:
+    reporter_interval: 5s
+    reporter_jitter: 0
+    probes: [heap]
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  extensions: [heap]
+  telemetry:
+    logs:
+      level: debug
+  pipelines:
+    profiles:
+      receivers: [profiling]
+      exporters: [debug]
