@@ -30,10 +30,27 @@ arguments are built into the script so the experiment is reproduced consistently
 Ten fresh processes were measured for each build mode. Each process made
 515,360 allocations totalling exactly 409,487,360 application-requested bytes.
 
+### Before changes
+
 | Build mode | Runs | Mean `callback_weighted_bytes / ground_truth_alloc_space` | Standard deviation | Mean allocation callbacks | Mean alloc/free pointer mismatches |
 |---|---:|---:|---:|---:|---:|
 | `MI_PROFILE=FULL` | 10 | 1.9052 | 0.0476 | 1412.1 | 151.7 |
 | `MI_PROFILE=ON` | 10 | 1.9011 | 0.0237 | 1402.2 | 159.8 |
+
+### After changes
+
+The stacked fix installs the interval returned by `on_alloc` as the next
+countdown and reconstructs the sampled allocation pointer before calling
+`on_free`.
+
+| Build mode | Runs | Mean `callback_weighted_bytes / ground_truth_alloc_space` | Standard deviation | Mean allocation callbacks | Mean alloc/free pointer mismatches |
+|---|---:|---:|---:|---:|---:|
+| `MI_PROFILE=FULL` | 10 | 0.9989 | 0.0017 | 740.6 | 0.0 |
+| `MI_PROFILE=ON` | 10 | 0.9993 | 0.0013 | 739.2 | 0.0 |
+
+This fixes weighting and alloc/free correlation. It does not fix delayed
+`MI_PROFILE=ON` attribution, cold pprof unwinding, or the internal over-allocation
+size reported for sampled aligned allocations.
 
 ### Column definitions
 

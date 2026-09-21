@@ -172,8 +172,11 @@ mi_decl_noinline mi_decl_restrict void* _mi_theap_malloc_profiled(mi_theap_t* th
       new_sample_rate = (*prof->on_alloc)(prof, sample_data, p, req_size, theap->profile_sample_rate, requested_since_last_sample, _mi_theap_heap(theap) );      
     }
   }
-  if (new_sample_rate!=0 && new_sample_rate != (size_t)theap->profile_sample_rate) { 
+  if (new_sample_rate!=0 && new_sample_rate != (size_t)theap->profile_sample_rate) {
     _mi_theap_set_profile_sample_rate(theap,new_sample_rate);
+    // The callback result is the next interval, not just a new upper bound.
+    theap->profile_sample_countdown = theap->profile_sample_rate;
+    theap->sample_countdown = theap->sample_rate;
   }
   mi_theap_stat_counter_increase(theap,profile_samples,1);  
   return p;
@@ -181,6 +184,7 @@ mi_decl_noinline mi_decl_restrict void* _mi_theap_malloc_profiled(mi_theap_t* th
 
 void _mi_page_profile_on_free(mi_page_t* page, mi_block_t* block, void* p) {
   mi_assert_internal(mi_block_ptr_is_sampled(block,p));
+  MI_UNUSED(p);
 
   // get the heap and profiler
   mi_heap_t* const heap = mi_page_heap(page);
@@ -190,7 +194,10 @@ void _mi_page_profile_on_free(mi_page_t* page, mi_block_t* block, void* p) {
   
   // call the on_free callback
   mi_profiler_sample_data_t* const sample_data = (mi_profiler_sample_data_t*)((uint8_t*)block + sizeof(mi_block_t));
-  (*prof->on_free)(prof, sample_data, p, heap);
+  const size_t sample_data_size = sizeof(mi_profiler_sample_data_t) + sample_data->user_data_size;
+  const size_t user_offset = _mi_align_up(sizeof(mi_block_t) + sample_data_size, MI_MAX_ALIGN_SIZE);
+  void* const sampled_p = (uint8_t*)block + user_offset;
+  (*prof->on_free)(prof, sample_data, sampled_p, heap);
 }
 
 

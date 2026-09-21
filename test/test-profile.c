@@ -16,6 +16,7 @@ terms of the MIT license. A copy of the license can be found in the file
 #include "mimalloc.h"
 #include "mimalloc-profile.h"
 #include "mimalloc/internal.h"
+#include "mimalloc/prim-tls.h"
 #include "testhelper.h"
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,8 @@ typedef struct {
   mi_profiler_t profiler;
   uint64_t  alloc_count;
   uint64_t  free_count;
+  uint64_t  pointer_mismatch_count;
+  size_t    next_threshold;
   size_t    last_size;
   uint64_t  last_upscaled;
   void*     last_ptr;
@@ -50,8 +53,8 @@ static size_t mi_cdecl on_alloc(mi_profiler_t* profiler, mi_profiler_sample_data
   // store ptr to verify round-trip 
   assert(data->user_data_size >= sizeof(void*));
   assert(data->user_data_size >= prof->profiler.sample_data_size);
-  data->user_data[0] = ptr; 
-  return TEST_THRESHOLD;
+  data->user_data[0] = ptr;
+  return (prof->next_threshold == 0 ? TEST_THRESHOLD : prof->next_threshold);
 }
 
 static void mi_cdecl on_free(mi_profiler_t* profiler, mi_profiler_sample_data_t* data, void* ptr, const mi_heap_t* heap) {
@@ -59,6 +62,7 @@ static void mi_cdecl on_free(mi_profiler_t* profiler, mi_profiler_sample_data_t*
   my_profiler_t* prof = downcast(profiler);
   prof->free_count++;
   // verify the user_data round-trip
+  if (data->user_data[0] != ptr) { prof->pointer_mismatch_count++; }
   assert(data->user_data[0] == ptr);  
 }
 
@@ -72,7 +76,7 @@ static my_profiler_t my_profiler = {
     NULL,            // on_realloc
     NULL,            // on_snapshot
   },
-  0, 0, 0, 0, NULL
+  0, 0, 0, 0, 0, 0, NULL
 };
 
 
@@ -145,6 +149,50 @@ bool test_profiler_on_free_called(void) {
   return true;
 }
 
+bool test_profiler_callback_installs_next_interval(void) {
+  CHECK_BODY("profiler: on_alloc result becomes the next interval") {
+    const size_t next_threshold = 4 * TEST_THRESHOLD;
+    const uint64_t alloc_before = my_profiler.alloc_count;
+    my_profiler.next_threshold = next_threshold;
+    int count;
+    for (count = 0; my_profiler.alloc_count == alloc_before && count < MAXLOOP; count++) {
+      void* p = mi_malloc(1024);
+      mi_free(p);
+    }
+    mi_theap_t* const theap = _mi_theap_default();
+    result = (count != MAXLOOP &&
+              theap->profile_sample_rate == next_threshold &&
+              theap->profile_sample_countdown == next_threshold &&
+              theap->sample_countdown == theap->sample_rate);
+    my_profiler.next_threshold = TEST_THRESHOLD;
+  }
+  return true;
+}
+
+bool test_profiler_aligned_pointer_round_trip(void) {
+  CHECK_BODY("profiler: aligned on_alloc and on_free pointers match") {
+    void* sampled = NULL;
+    uint64_t alloc_before = my_profiler.alloc_count;
+    int count;
+    for (count = 0; sampled == NULL && count < MAXLOOP; count++) {
+      void* p = mi_malloc_aligned(4096, 65536);
+      if (my_profiler.alloc_count > alloc_before) {
+        alloc_before = my_profiler.alloc_count;
+        if (p != my_profiler.last_ptr) { sampled = p; }
+      }
+      if (p != sampled) { mi_free(p); }
+    }
+    const uint64_t free_before = my_profiler.free_count;
+    const uint64_t mismatch_before = my_profiler.pointer_mismatch_count;
+    if (sampled != NULL) { mi_free(sampled); }
+    assert(count != MAXLOOP);
+    result = (sampled != NULL &&
+              my_profiler.free_count == free_before + 1 &&
+              my_profiler.pointer_mismatch_count == mismatch_before);
+  }
+  return true;
+}
+
 bool test_profiler_upscaled_at_least_size(void) {
   CHECK_BODY("profiler: upscaled_size >= size") {
     uint64_t before = my_profiler.alloc_count;
@@ -182,6 +230,8 @@ int main(void) {
   test_profiler_samples();
   test_profiler_record_fields();
   test_profiler_on_free_called();
+  test_profiler_callback_installs_next_interval();
+  test_profiler_aligned_pointer_round_trip();
   test_profiler_free_count_le_alloc_count();
 
   mi_profiler_stop(&my_profiler.profiler);
